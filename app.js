@@ -908,11 +908,17 @@ function renderAll() {
   scheduleConnectors();
 }
 
-/* ---------------- selection (drag on desktop, tap-tap on touch) */
+/* ---------------- selection (drag across days; works with mouse, pen, touch)
 
-let dragAnchor = null;   // ISO date where mouse/pen drag started
-let dragFocus = null;
-let tapAnchor = null;    // ISO date of first tap (touch flow)
+   On touch the cells use `touch-action: pan-y`: a vertical swipe still
+   scrolls the year, but a horizontal drag (the natural across-a-week
+   gesture) is delivered to us, so dragging selects a range. Once a drag
+   begins it can continue in any direction across rows. A plain tap with no
+   movement selects a single day. */
+
+let dragAnchor = null;   // ISO date where the drag started
+let dragFocus = null;    // ISO date currently under the pointer
+let dragId = null;       // active pointerId
 
 function paintSelection(a, b) {
   const [lo, hi] = a <= b ? [a, b] : [b, a];
@@ -923,13 +929,8 @@ function paintSelection(a, b) {
 }
 
 function clearSelection() {
-  dragAnchor = dragFocus = null;
+  dragAnchor = dragFocus = dragId = null;
   $$('#calendar .day.sel').forEach(c => c.classList.remove('sel'));
-}
-
-function clearTapAnchor() {
-  tapAnchor = null;
-  $$('#calendar .day.pending').forEach(c => c.classList.remove('pending'));
 }
 
 function cellFromPoint(x, y) {
@@ -941,18 +942,20 @@ function initSelection() {
   const cal = $('#calendar');
 
   cal.addEventListener('pointerdown', e => {
+    if (e.button != null && e.button !== 0) return; // left button / touch / pen only
     if (e.target.closest('.evspan')) return;
     const cell = e.target.closest('.day');
     if (!cell) return;
-    if (e.pointerType === 'touch') return; // touch uses tap-tap flow on pointerup
-    e.preventDefault();
     dragAnchor = dragFocus = cell.dataset.date;
+    dragId = e.pointerId;
     paintSelection(dragAnchor, dragFocus);
+    // capture so we keep getting moves even if the finger leaves the cell
     try { cal.setPointerCapture(e.pointerId); } catch { /* noop */ }
+    if (e.pointerType !== 'touch') e.preventDefault();
   });
 
   cal.addEventListener('pointermove', e => {
-    if (!dragAnchor || e.pointerType === 'touch') return;
+    if (dragAnchor == null || e.pointerId !== dragId) return;
     const cell = cellFromPoint(e.clientX, e.clientY);
     if (cell && cell.dataset.date !== dragFocus) {
       dragFocus = cell.dataset.date;
@@ -961,25 +964,7 @@ function initSelection() {
   });
 
   cal.addEventListener('pointerup', e => {
-    if (e.pointerType === 'touch') {
-      if (e.target.closest('.evspan')) return;
-      const cell = e.target.closest('.day');
-      if (!cell) return;
-      const d = cell.dataset.date;
-      if (!tapAnchor) {
-        const existing = eventsOnDate(d);
-        if (existing.length) { openDayChooser(d, existing); return; }
-        tapAnchor = d;
-        cell.classList.add('pending');
-        toast('Start day picked — tap an end day, or tap it again for a single day.');
-      } else {
-        const [lo, hi] = tapAnchor <= d ? [tapAnchor, d] : [d, tapAnchor];
-        clearTapAnchor();
-        openEventModal({ start: lo, end: hi });
-      }
-      return;
-    }
-    if (!dragAnchor) return;
+    if (dragAnchor == null || e.pointerId !== dragId) return;
     const [lo, hi] = dragAnchor <= dragFocus ? [dragAnchor, dragFocus] : [dragFocus, dragAnchor];
     clearSelection();
     if (lo === hi) {
@@ -991,11 +976,10 @@ function initSelection() {
 
   cal.addEventListener('pointercancel', () => clearSelection());
 
-  // click on a span: this day already has events — offer edit or add-another
+  // tap/click a span: this day already has events — offer edit or add-another
   cal.addEventListener('click', e => {
     const span = e.target.closest('.evspan');
     if (!span) return;
-    clearTapAnchor();
     const day = document.elementsFromPoint(e.clientX, e.clientY)
       .find(el => el.classList && el.classList.contains('day'));
     const date = day ? day.dataset.date : null;
@@ -1004,7 +988,7 @@ function initSelection() {
   });
 
   document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') { clearSelection(); clearTapAnchor(); }
+    if (e.key === 'Escape') clearSelection();
   });
 }
 

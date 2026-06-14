@@ -205,6 +205,8 @@ button { font: inherit; }
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;
+  /* vertical swipe scrolls the year; horizontal drag selects a day range */
+  touch-action: pan-y;
 }
 .day:last-child { border-right: none; }
 
