@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="auto" data-accent="classic">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="theme-color" content="#1f6feb" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="Compact Calendar" />
+  <title>Compact Calendar</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icon.svg" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <h1>Compact Calendar</h1>
+    </div>
+    <nav class="yearnav" aria-label="Year navigation">
+      <button id="prev-year" class="btn icon" title="Previous year" aria-label="Previous year">&#x2039;</button>
+      <span id="year-label" class="year-label">2026</span>
+      <button id="next-year" class="btn icon" title="Next year" aria-label="Next year">&#x203A;</button>
+    </nav>
+    <div class="topbar-actions">
+      <button id="btn-import" class="btn" title="Import events from an .ics file">Import</button>
+      <button id="btn-export" class="btn" title="Export all events as .ics">Save Calendar</button>
+      <button id="btn-export-image" class="btn" title="Save the calendar as an image or PDF">Save to Image</button>
+      <button id="btn-reset-labels" class="btn" title="Move all event labels back to their optimal positions">Auto Position</button>
+      <button id="btn-theme" class="btn icon" title="Theme: auto"><span id="theme-icon">&#x25D0;</span></button>
+      <button id="btn-settings" class="btn icon" title="Settings" aria-label="Settings">&#x2699;&#xFE0E;</button>
+      <button id="btn-profile" class="btn icon" title="Switch profile"><span class="profile-chip" id="profile-chip">?</span></button>
+    </div>
+  </header>
+
+  <main class="layout" id="layout">
+    <svg id="connectors" aria-hidden="true"></svg>
+
+    <section class="calendar-wrap" aria-label="Calendar">
+      <div class="cal-owner" id="cal-owner"></div>
+      <div class="dow-row" id="dow-row"></div>
+      <div class="calendar" id="calendar"></div>
+    </section>
+
+    <aside class="panel" aria-label="Events">
+      <div class="cards" id="cards"></div>
+    </aside>
+  </main>
+
+  <div id="profile-picker" class="profile-picker" hidden>
+    <h2>Who&rsquo;s planning?</h2>
+    <div class="profile-grid" id="profile-grid"></div>
+    <div class="picker-actions">
+      <button type="button" class="btn" id="profile-manage">Manage profiles</button>
+      <button type="button" class="btn" id="picker-close">Close</button>
+    </div>
+  </div>
+
+  <dialog id="profile-dialog">
+    <h3 id="profile-dialog-title">New profile</h3>
+    <label class="field">
+      <span>Name</span>
+      <input type="text" id="profile-name" placeholder="Profile name" autocomplete="off" />
+    </label>
+    <label class="field">
+      <span>Picture — emoji or letter (optional, defaults to first letter of name)</span>
+      <input type="text" id="profile-avatar-input" placeholder="&#x1F98A;" maxlength="8" autocomplete="off" />
+    </label>
+    <div class="field">
+      <span class="field-label">Color</span>
+      <div id="profile-colors" class="swatches"></div>
+    </div>
+    <div class="dialog-actions">
+      <button type="button" class="btn danger" id="profile-delete" hidden>Delete</button>
+      <span class="spacer"></span>
+      <button type="button" class="btn" id="profile-cancel">Cancel</button>
+      <button type="button" class="btn primary" id="profile-save">Save</button>
+    </div>
+  </dialog>
+
+  <div id="toast" class="toast" hidden></div>
+  <input type="file" id="ics-file" accept=".ics,text/calendar" hidden />
+
+  <dialog id="event-dialog">
+    <form method="dialog" id="event-form">
+      <h3 id="event-dialog-title">New event</h3>
+      <label class="field">
+        <span>Title</span>
+        <input type="text" id="ev-title" placeholder="Event title" autocomplete="off" required />
+      </label>
+      <div class="field-row">
+        <label class="field">
+          <span>Start</span>
+          <input type="date" id="ev-start" required />
+        </label>
+        <label class="field">
+          <span>End</span>
+          <input type="date" id="ev-end" required />
+        </label>
+      </div>
+      <div class="field">
+        <span>Color</span>
+        <div id="ev-colors" class="swatches"></div>
+      </div>
+      <label class="field">
+        <span>Notes</span>
+        <textarea id="ev-notes" rows="3" placeholder="Optional description"></textarea>
+      </label>
+      <div class="dialog-actions">
+        <button type="button" class="btn danger" id="ev-delete" hidden>Delete</button>
+        <button type="button" class="btn" id="ev-ics" hidden title="Download this event as .ics">&#x2913; .ics</button>
+        <span class="spacer"></span>
+        <button type="button" class="btn" id="ev-cancel">Cancel</button>
+        <button type="submit" class="btn primary" id="ev-save">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="export-dialog">
+    <h3>Save to Image</h3>
+    <label class="field">
+      <span>QR code (scan to import as .ics)</span>
+      <select id="export-qrmode">
+        <option value="none">None</option>
+        <option value="per">Individual — next to each event label</option>
+        <option value="whole">One big QR — whole calendar</option>
+      </select>
+    </label>
+    <label class="field checkbox">
+      <input type="checkbox" id="export-mono" />
+      <span>Monochrome — grayscale on white</span>
+    </label>
+    <div class="dialog-actions">
+      <button type="button" class="btn primary" id="export-png">Save to Image</button>
+      <span class="spacer"></span>
+      <button type="button" class="btn" id="export-cancel">Cancel</button>
+    </div>
+  </dialog>
+
+  <dialog id="cheatsheet-dialog">
+    <div class="dialog-head">
+      <h3>Color scheme cheatsheet</h3>
+      <button type="button" class="btn" id="cheatsheet-close">Close</button>
+    </div>
+    <div id="cheatsheet-list" class="cheatsheet"></div>
+  </dialog>
+
+  <dialog id="choose-dialog">
+    <h3 id="choose-title">This day has events</h3>
+    <div id="choose-list" class="choose-list"></div>
+    <div class="dialog-actions">
+      <button type="button" class="btn primary" id="choose-new">+ New event on this day</button>
+      <span class="spacer"></span>
+      <button type="button" class="btn" id="choose-cancel">Cancel</button>
+    </div>
+  </dialog>
+
+  <dialog id="settings-dialog">
+    <form method="dialog" class="settings-form">
+      <div class="dialog-head">
+        <h3>Settings</h3>
+        <span class="dialog-head-actions">
+          <button type="button" class="btn" id="settings-cancel">Cancel</button>
+          <button type="submit" class="btn primary">Apply</button>
+        </span>
+      </div>
+
+      <h4>Calendar</h4>
+      <div class="field-row">
+        <label class="field">
+          <span>Week starts on</span>
+          <select id="set-weekstart">
+            <option value="0">Sunday</option>
+            <option value="1">Monday</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Timezone</span>
+          <select id="set-timezone"></select>
+        </label>
+      </div>
+      <div class="field-row">
+        <label class="field">
+          <span>Length</span>
+          <select id="set-months">
+            <option value="12">12 months</option>
+            <option value="18">18 months</option>
+          </select>
+        </label>
+        <div class="field">
+          <span class="field-label">Day number size</span>
+          <div class="fs-group" id="fs-group">
+            <button type="button" class="fs-btn" data-fs="9" style="font-size: 10px">a</button>
+            <button type="button" class="fs-btn" data-fs="11" style="font-size: 12px">A</button>
+            <button type="button" class="fs-btn" data-fs="13" style="font-size: 15px">A</button>
+            <button type="button" class="fs-btn" data-fs="15" style="font-size: 18px">A</button>
+          </div>
+        </div>
+      </div>
+      <label class="field">
+        <span>Past days</span>
+        <select id="set-paststyle">
+          <option value="none">Normal</option>
+          <option value="darken">Darken</option>
+          <option value="strike">Strikethrough</option>
+          <option value="hide">Hide past months — start at current month</option>
+        </select>
+      </label>
+      <label class="field checkbox">
+        <input type="checkbox" id="set-hidepast" />
+        <span>Hide past events (already ended)</span>
+      </label>
+      <label class="field checkbox">
+        <input type="checkbox" id="set-exportpast" />
+        <span>Include past events in exports (image &amp; Save Calendar)</span>
+      </label>
+
+      <h4>Appearance</h4>
+      <div class="field-row">
+        <label class="field">
+          <span>Theme</span>
+          <select id="set-theme">
+            <option value="auto">Auto (system)</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </label>
+        <div class="field">
+          <span class="field-label">Schemes</span>
+          <button type="button" class="btn" id="btn-cheatsheet">Cheatsheet</button>
+        </div>
+      </div>
+      <label class="field">
+        <span>Color scheme</span>
+        <select id="set-scheme">
+          <option value="builtin">Built-in (light/dark)</option>
+        </select>
+      </label>
+      <div id="scheme-preview" class="scheme-preview"></div>
+      <div class="field">
+        <span class="field-label">Accent color</span>
+        <div id="accent-swatches" class="swatches"></div>
+      </div>
+      <label class="field checkbox">
+        <input type="checkbox" id="set-autocolor" />
+        <span>Auto-pick a new theme color for each event</span>
+      </label>
+      <p class="hint">Theme picks light or dark — including which variant of a Day/Night color scheme is used.</p>
+
+      <h4>Event labels</h4>
+      <label class="field checkbox">
+        <input type="checkbox" id="set-slim" />
+        <span>Slim labels — one line (date: event)</span>
+      </label>
+      <label class="field checkbox">
+        <input type="checkbox" id="set-fit" />
+        <span>Fit label width to its text</span>
+      </label>
+
+      <h4>Connector lines</h4>
+      <div class="field-row">
+        <label class="field">
+          <span>Style</span>
+          <select id="set-linestyle">
+            <option value="straight">Straight</option>
+            <option value="simple">Simple (elbow)</option>
+            <option value="curved">Curved</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Stroke</span>
+          <select id="set-linedash">
+            <option value="solid">Solid</option>
+            <option value="dash">Dash</option>
+            <option value="dot">Dot</option>
+            <option value="finedot">Fine dot</option>
+          </select>
+        </label>
+      </div>
+      <label class="field checkbox">
+        <input type="checkbox" id="set-lineedge" />
+        <span>Route along cell edges (off = straight out of the cell)</span>
+      </label>
+      <label class="field checkbox">
+        <input type="checkbox" id="set-dynorigin" />
+        <span>Dynamic origin — lines may leave from the top, bottom, or right of an event</span>
+      </label>
+      <div class="field-row">
+        <label class="field">
+          <span>Thickness</span>
+          <input type="range" id="set-linewidth" min="1" max="4" step="0.5" />
+        </label>
+        <label class="field">
+          <span>Transparency</span>
+          <input type="range" id="set-lineopacity" min="0.1" max="1" step="0.05" />
+        </label>
+      </div>
+
+      <h4>Data</h4>
+      <button type="button" class="btn danger" id="clear-calendar">Clear calendar — delete all events</button>
+    </form>
+  </dialog>
+
+  <script src="qr.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
