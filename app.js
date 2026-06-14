@@ -371,7 +371,8 @@ async function loadSchemes() {
 }
 
 const SCHEME_VARS = ['--bg', '--bg-raised', '--fg', '--fg-muted', '--line', '--line-soft',
-                     '--month-a', '--month-b', '--weekend', '--outside', '--accent', '--accent-soft'];
+                     '--month-a', '--month-b', '--weekend', '--outside', '--accent', '--accent-soft',
+                     '--today'];
 
 function applyScheme() {
   const root = document.documentElement;
@@ -405,6 +406,7 @@ function applyScheme() {
   set('--outside', rgbCss(mixRgb(bg, fg, 0.4)));
   set('--accent', rgbCss(accent));
   set('--accent-soft', rgbCss(accent, 0.16));
+  set('--today', dark ? '#ffffff' : '#000000'); // black on light schemes, white on dark
   root.style.colorScheme = dark ? 'dark' : 'light';
 }
 
@@ -436,11 +438,6 @@ function applyTheme() {
     html.style.removeProperty('--accent');
     html.style.removeProperty('--accent-soft');
   }
-  const usingScheme = state.settings.scheme !== 'builtin';
-  const icons = { auto: '◐', light: '☀︎', dark: '☾︎' };
-  $('#theme-icon').textContent = icons[state.settings.themeMode] || icons.auto;
-  $('#btn-theme').title = 'Theme: ' + state.settings.themeMode +
-    (usingScheme ? ' · ' + state.settings.scheme : '');
 }
 
 /* ---------------- calendar grid */
@@ -908,87 +905,180 @@ function renderAll() {
   scheduleConnectors();
 }
 
-/* ---------------- selection (drag across days; works with mouse, pen, touch)
+/* ---------------- selection
 
-   On touch the cells use `touch-action: pan-y`: a vertical swipe still
-   scrolls the year, but a horizontal drag (the natural across-a-week
-   gesture) is delivered to us, so dragging selects a range. Once a drag
-   begins it can continue in any direction across rows. A plain tap with no
-   movement selects a single day. */
+   Mouse / pen: drag selects and opens the dialog on release (one step).
+
+   Touch (two step): a quick HORIZONTAL drag, or holding still briefly
+   (long-press) then dragging ANY direction, selects a range — vertical
+   drags work once selection has begun, so you can drag straight down across
+   weeks. A plain vertical swipe (no hold) still scrolls the year. Releasing
+   highlights the range ("armed"); tap inside it to confirm, or drag/tap
+   elsewhere to reselect. */
 
 let dragAnchor = null;   // ISO date where the drag started
 let dragFocus = null;    // ISO date currently under the pointer
-let dragId = null;       // active pointerId
+let dragId = null;       // active mouse/pen pointerId
+let armed = null;        // touch: {lo, hi} selection awaiting a confirm tap
 
-function paintSelection(a, b) {
-  const [lo, hi] = a <= b ? [a, b] : [b, a];
+function paintRange(lo, hi, cls) {
   $$('#calendar .day').forEach(cell => {
     const d = cell.dataset.date;
-    cell.classList.toggle('sel', d >= lo && d <= hi);
+    cell.classList.toggle(cls, d >= lo && d <= hi);
   });
 }
 
-function clearSelection() {
+function clearLive() {
   dragAnchor = dragFocus = dragId = null;
   $$('#calendar .day.sel').forEach(c => c.classList.remove('sel'));
 }
 
+function clearArmed() {
+  armed = null;
+  $$('#calendar .day.armed').forEach(c => c.classList.remove('armed'));
+}
+
+// the day cell at a point, even when an event span sits on top of it
 function cellFromPoint(x, y) {
-  const el = document.elementFromPoint(x, y);
-  return el && el.closest ? el.closest('.day') : null;
+  for (const el of document.elementsFromPoint(x, y)) {
+    if (el.classList && el.classList.contains('day')) return el;
+  }
+  return null;
+}
+
+function paintLive() {
+  const lo = dragAnchor <= dragFocus ? dragAnchor : dragFocus;
+  const hi = dragAnchor <= dragFocus ? dragFocus : dragAnchor;
+  paintRange(lo, hi, 'sel');
 }
 
 function initSelection() {
   const cal = $('#calendar');
 
+  /* ---- mouse / pen: immediate drag ---- */
   cal.addEventListener('pointerdown', e => {
-    if (e.button != null && e.button !== 0) return; // left button / touch / pen only
+    if (e.pointerType === 'touch') return;     // touch handled by touch events
+    if (e.button !== 0) return;
     if (e.target.closest('.evspan')) return;
     const cell = e.target.closest('.day');
     if (!cell) return;
+    clearArmed();
     dragAnchor = dragFocus = cell.dataset.date;
     dragId = e.pointerId;
-    paintSelection(dragAnchor, dragFocus);
-    // capture so we keep getting moves even if the finger leaves the cell
+    paintLive();
     try { cal.setPointerCapture(e.pointerId); } catch { /* noop */ }
-    if (e.pointerType !== 'touch') e.preventDefault();
+    e.preventDefault();
   });
 
   cal.addEventListener('pointermove', e => {
-    if (dragAnchor == null || e.pointerId !== dragId) return;
+    if (e.pointerType === 'touch' || dragAnchor == null || e.pointerId !== dragId) return;
     const cell = cellFromPoint(e.clientX, e.clientY);
-    if (cell && cell.dataset.date !== dragFocus) {
-      dragFocus = cell.dataset.date;
-      paintSelection(dragAnchor, dragFocus);
-    }
+    if (cell && cell.dataset.date !== dragFocus) { dragFocus = cell.dataset.date; paintLive(); }
   });
 
   cal.addEventListener('pointerup', e => {
-    if (dragAnchor == null || e.pointerId !== dragId) return;
+    if (e.pointerType === 'touch' || dragAnchor == null || e.pointerId !== dragId) return;
     const [lo, hi] = dragAnchor <= dragFocus ? [dragAnchor, dragFocus] : [dragFocus, dragAnchor];
-    clearSelection();
-    if (lo === hi) {
-      const existing = eventsOnDate(lo);
-      if (existing.length) { openDayChooser(lo, existing); return; }
-    }
+    clearLive();
+    if (lo === hi && eventsOnDate(lo).length) { openDayChooser(lo, eventsOnDate(lo)); return; }
     openEventModal({ start: lo, end: hi });
   });
 
-  cal.addEventListener('pointercancel', () => clearSelection());
+  cal.addEventListener('pointercancel', e => { if (e.pointerType !== 'touch') clearLive(); });
 
-  // tap/click a span: this day already has events — offer edit or add-another
+  /* ---- touch: quick-horizontal or hold-then-drag, any direction ---- */
+  let lpTimer = 0, sx = 0, sy = 0, sDate = null, onSpan = false, selecting = false, moved = false;
+  const LONG = 280, START = 10;
+
+  const beginSelect = () => {
+    if (selecting || !sDate) return;
+    selecting = true;
+    clearArmed();
+    dragAnchor = dragFocus = sDate;
+    paintLive();
+    if (navigator.vibrate) { try { navigator.vibrate(8); } catch { /* noop */ } }
+  };
+
+  cal.addEventListener('touchstart', e => {
+    clearTimeout(lpTimer);
+    selecting = false; moved = false;
+    if (e.touches.length !== 1) { sDate = null; return; }
+    const t = e.touches[0];
+    onSpan = !!e.target.closest('.evspan');
+    const cell = cellFromPoint(t.clientX, t.clientY);
+    sDate = cell ? cell.dataset.date : null;
+    sx = t.clientX; sy = t.clientY;
+    if (!onSpan && sDate) lpTimer = setTimeout(beginSelect, LONG); // hold to free-drag
+  }, { passive: true });
+
+  cal.addEventListener('touchmove', e => {
+    const t = e.touches[0];
+    if (!t) return;
+    const dx = t.clientX - sx, dy = t.clientY - sy;
+    if (!moved && Math.hypot(dx, dy) > START) moved = true;
+    if (!selecting) {
+      if (moved && !onSpan && sDate && Math.abs(dx) > Math.abs(dy)) {
+        clearTimeout(lpTimer);   // quick horizontal → start selecting now
+        beginSelect();
+      } else if (moved) {
+        clearTimeout(lpTimer);   // vertical/diagonal scroll → let the page scroll
+        return;
+      } else {
+        return;
+      }
+    }
+    e.preventDefault();          // selecting → suppress scrolling, extend range
+    const cell = cellFromPoint(t.clientX, t.clientY);
+    if (cell && cell.dataset.date !== dragFocus) { dragFocus = cell.dataset.date; paintLive(); }
+  }, { passive: false });
+
+  const endTouch = e => {
+    clearTimeout(lpTimer);
+    if (selecting) {
+      selecting = false;
+      const lo = dragAnchor <= dragFocus ? dragAnchor : dragFocus;
+      const hi = dragAnchor <= dragFocus ? dragFocus : dragAnchor;
+      clearLive();
+      clearArmed();
+      armed = { lo, hi };
+      paintRange(lo, hi, 'armed');
+      toast(lo === hi ? 'Tap the highlighted day again to add an event'
+                      : 'Tap the highlighted dates to add an event');
+      e.preventDefault();        // no synthetic click
+      return;
+    }
+    if (moved) return;           // it was a scroll
+    // a tap
+    const d = sDate || (onSpan ? (cellFromPoint(sx, sy) || {}).dataset?.date : null);
+    if (!d) return;
+    e.preventDefault();          // suppress the synthetic click
+    if (onSpan || eventsOnDate(d).length) {
+      if (armed && d >= armed.lo && d <= armed.hi) { const a = armed; clearArmed(); openEventModal({ start: a.lo, end: a.hi }); return; }
+      clearArmed();
+      openDayChooser(d, eventsOnDate(d));
+      return;
+    }
+    if (armed && d >= armed.lo && d <= armed.hi) { const a = armed; clearArmed(); openEventModal({ start: a.lo, end: a.hi }); return; }
+    clearArmed();
+    armed = { lo: d, hi: d };
+    paintRange(d, d, 'armed');
+    toast('Tap the highlighted day again to add an event');
+  };
+  cal.addEventListener('touchend', endTouch, { passive: false });
+  cal.addEventListener('touchcancel', () => { clearTimeout(lpTimer); selecting = false; clearLive(); });
+
+  /* ---- mouse click on an event span → chooser ---- */
   cal.addEventListener('click', e => {
     const span = e.target.closest('.evspan');
     if (!span) return;
-    const day = document.elementsFromPoint(e.clientX, e.clientY)
-      .find(el => el.classList && el.classList.contains('day'));
-    const date = day ? day.dataset.date : null;
-    if (date) openDayChooser(date, eventsOnDate(date));
+    clearArmed();
+    const cell = cellFromPoint(e.clientX, e.clientY);
+    if (cell) openDayChooser(cell.dataset.date, eventsOnDate(cell.dataset.date));
     else openEditModal(span.dataset.ev);
   });
 
   document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') clearSelection();
+    if (e.key === 'Escape') { clearLive(); clearArmed(); }
   });
 }
 
@@ -1407,14 +1497,6 @@ function initSettings() {
     toast('Event labels back to automatic positions.');
   });
 
-  $('#btn-theme').addEventListener('click', () => {
-    const order = ['auto', 'light', 'dark'];
-    const next = order[(order.indexOf(state.settings.themeMode) + 1) % order.length];
-    state.settings.themeMode = next;
-    saveState(); applyTheme();
-    renderAll(); // may switch a scheme's light/dark variant
-    toast('Theme: ' + next);
-  });
 }
 
 /* ---------------- ICS import/export */
